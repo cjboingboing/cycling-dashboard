@@ -12,13 +12,16 @@ build/
 .venv/
 venv/
 
-# Data — large files, never commit these
+# Data — raw files and large exports
 data/raw/
-data/processed/
-*.parquet
 *.csv
 *.fit
 *.zip
+
+# Processed data is committed for the Streamlit Cloud demo
+# (remove the next two lines to exclude it again)
+# data/processed/
+# *.parquet
 
 # ML models
 *.joblib
