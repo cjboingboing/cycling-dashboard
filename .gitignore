@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# Environments
+.env
+.venv/
+venv/
+
+# Data — large files, never commit these
+data/raw/
+data/processed/
+*.parquet
+*.csv
+*.fit
+*.zip
+
+# ML models
+*.joblib
+*.pkl
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Screenshots / temp files
+*.png
+*.jpg
+
+# IDE
+.vscode/
+.idea/
+
+# Claude internal
+.claude/
+CLAUDE.md
+
+# OS
+.DS_Store
+Thumbs.db

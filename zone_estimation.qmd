@@ -1,0 +1,719 @@
+---
+title: "Estimating Power Zone Distributions in Cycling"
+subtitle: "From Gaussian Moment Matching to Bayesian Dirichlet Regression"
+author: "Calum Moir"
+date: today
+format:
+  pdf:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    geometry: margin=2.5cm
+    fontsize: 11pt
+    linestretch: 1.3
+    keep-tex: false
+    colorlinks: true
+    link-citations: true
+    cite-method: biblatex
+bibliography: references.bib
+---
+
+```{=latex}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\NP}{\mathrm{NP}}
+\newcommand{\AP}{\mathrm{AP}}
+\newcommand{\FTP}{\mathrm{FTP}}
+\newcommand{\VI}{\mathrm{VI}}
+\newcommand{\Dir}{\mathrm{Dir}}
+```
+
+# Abstract {.unnumbered}
+
+Cycling training data from platforms such as Garmin Connect and Strava typically
+reports only aggregate statistics per activity: average power, normalised power, and
+total duration. Without second-by-second power traces these summaries are insufficient
+to determine *how* training load was distributed across physiological zones, yet that
+distribution is critical for evaluating training balance and recommending future
+sessions. This paper describes two complementary statistical models implemented in a
+personal cycling performance dashboard. The first is an analytic Gaussian approximation
+that uses the relationship between normalised power and average power to infer the
+spread of the power distribution and thus allocate ride time across zones. The second
+is a Bayesian Dirichlet regression model trained on Garmin rides that carry ground-truth
+per-zone times, which learns how intensity and power variability predict zone
+distributions and generalises to rides that have only summary statistics. Together the
+models enable continuous, interpretable monitoring of training polarisation in line with
+evidence-based guidelines [@seiler2006; @stoggl2014].
+
+# Introduction
+
+Training load monitoring in cycling has matured considerably over the past two decades.
+The *Performance Management Chart* (PMC), derived from Banister's impulse-response
+model [-@banister1975], quantifies fitness (Chronic Training Load, CTL), fatigue
+(Acute Training Load, ATL) and form (Training Stress Balance, TSB) from a single daily
+metric — Training Stress Score (TSS). This framework, popularised by Coggan and Allen
+[-@coggan2010], allows athletes and coaches to plan and respond to training load
+systematically.
+
+Alongside load management, *training intensity distribution* has attracted growing
+attention. Seiler and Kjerland [-@seiler2006] demonstrated that elite endurance
+athletes spend approximately 80% of training time at low intensity (below the first
+lactate threshold) and 15–20% at high intensity (near or above VO~2~max), with very
+little time in the intermediate "grey zone" between the two thresholds. A randomised
+controlled trial by Stöggl and Sperlich [-@stoggl2014] confirmed that this *polarised*
+distribution produced greater VO~2~max gains than threshold or high-volume training
+models over a 9-week intervention.
+
+Implementing such monitoring requires knowing not just *how much* training was done but
+*at what intensity*. When a cycling computer records second-by-second power, the
+distribution is fully observed; Garmin devices for instance store time-in-zone directly.
+But Strava activity exports frequently carry only summary statistics: average power,
+normalised power, and duration. The question this paper addresses is: *given only these
+summary statistics, can we estimate the zone time distribution with acceptable accuracy?*
+
+The remainder of the paper proceeds as follows. @sec-background provides background on
+the relevant physiological and mathematical concepts. @sec-problem formalises the
+estimation problem. @sec-gaussian and @sec-bayesian describe the two models. @sec-results
+summarises empirical results on the author's own training data. @sec-discussion discusses
+limitations and future directions.
+
+Full mathematical derivations are collected in the appendix for readers who want to
+understand the models at a deeper level.
+
+# Background {#sec-background}
+
+## The Performance Management Chart
+
+The PMC tracks three exponentially weighted moving averages of daily TSS. Let $s_t$
+denote the TSS on day $t$. Fitness (CTL) and fatigue (ATL) evolve as:
+
+$$
+\text{CTL}_t = (1-\alpha_\text{CTL})\,\text{CTL}_{t-1} + \alpha_\text{CTL}\,s_t
+$$
+
+$$
+\text{ATL}_t = (1-\alpha_\text{ATL})\,\text{ATL}_{t-1} + \alpha_\text{ATL}\,s_t
+$$
+
+where $\alpha_\text{CTL} = 1 - e^{-1/42}$ (42-day time constant) and
+$\alpha_\text{ATL} = 1 - e^{-1/7}$ (7-day time constant). Form, or Training Stress
+Balance, is $\text{TSB}_t = \text{CTL}_{t-1} - \text{ATL}_{t-1}$.
+
+The TSS for a ride lasting $T$ seconds at normalised power $\NP$ watts is:
+
+$$
+\text{TSS} = \frac{T \cdot \NP^2}{\FTP^2 \cdot 3600} \times 100
+$$
+
+where FTP is the athlete's functional threshold power.
+
+## Coggan Power Zones
+
+Coggan [-@coggan2010] defined seven training zones as percentages of FTP:
+
+| Zone | Name             | FTP fraction   |
+|------|------------------|----------------|
+| Z1   | Recovery         | $< 55\%$       |
+| Z2   | Endurance        | $55$–$75\%$    |
+| Z3   | Tempo            | $76$–$90\%$    |
+| Z4   | Threshold        | $91$–$105\%$   |
+| Z5   | VO~2~max         | $106$–$120\%$  |
+| Z6   | Anaerobic        | $121$–$150\%$  |
+| Z7   | Neuromuscular    | $> 150\%$      |
+
+: Coggan seven-zone power model. {#tbl-zones}
+
+In the polarised framework, Z1+Z2 form the "easy" block, Z3+Z4 the "grey zone", and
+Z5–Z7 the "hard" block.
+
+## Normalised Power
+
+Normalised power (NP) is the 4th-root of the mean 4th power of a rolling 30-second
+average of instantaneous power over the ride. Formally, for a sequence of power
+observations $\{x_t\}$:
+
+$$
+\NP = \left(\frac{1}{n}\sum_{t=1}^{n} x_t^4\right)^{1/4}
+$$
+
+This is equivalent to the $\mathcal{L}^4$ norm of the empirical distribution, and it
+weights high-power efforts more heavily than average power. A ride with large spikes —
+such as a criterium or interval session — will have $\NP \gg \AP$, while a steady
+endurance ride will have $\NP \approx \AP$. The *variability index* $\VI = \NP / \AP$
+encodes this spread concisely.
+
+## Seiler's Polarised Training Model
+
+Seiler and Kjerland [-@seiler2006] observed that elite cross-country skiers,
+cyclists and rowers converge on a distribution in which roughly 75–80% of training
+sessions fall below the first ventilatory threshold and 15–20% above the second,
+irrespective of total volume. The grey zone between thresholds — which Coggan's Z3 and
+Z4 approximate — tends to be minimised.
+
+This polarisation is thought to reflect an adaptation optimisation: easy sessions
+maximise fat oxidation and mitochondrial biogenesis without accumulating excess fatigue,
+while hard sessions push the VO~2~max ceiling without the chronic inflammatory cost of
+sustained threshold work.
+
+In practice the thresholds are athlete-specific. For power-based monitoring, Z3–Z4
+($76$–$105\%$ FTP) serves as a pragmatic proxy for the grey zone, with a flag raised
+when these zones exceed 15% of total training time.
+
+# The Zone Estimation Problem {#sec-problem}
+
+Let a ride be characterised by a pair $(\AP, \NP)$ and a total duration $T$ seconds.
+Define $\FTP$ as the athlete's functional threshold power. The object of interest is
+the *zone time vector*:
+
+$$
+\mathbf{t} = (t_1, t_2, t_3, t_4, t_5, t_6, t_7), \quad \sum_k t_k = T
+$$
+
+where $t_k$ is the seconds spent with power in zone $k$.
+
+Equivalently, we work with the *zone fraction vector*:
+
+$$
+\mathbf{z} = \mathbf{t} / T, \quad z_k \geq 0, \quad \sum_k z_k = 1
+$$
+
+**The problem**: given only $(\AP, \NP, T)$ and the athlete's $\FTP$, estimate $\mathbf{z}$.
+
+Two approaches are developed:
+
+1. **Gaussian moment matching** — treat instantaneous power as Gaussian, use $\AP$ and
+   $\NP$ to determine the distribution parameters, and compute zone fractions as
+   probabilities under this Gaussian.
+
+2. **Bayesian Dirichlet regression** — use rides with observed $\mathbf{z}$ (from Garmin
+   device data) to fit a regression model from $(\AP, \NP)$ to $\mathbf{z}$, exploiting
+   the natural compositional structure of zone fractions.
+
+# Gaussian Moment Matching {#sec-gaussian}
+
+## Intuition
+
+For a steady endurance ride at 65% FTP, power barely deviates from the mean: almost all
+time is spent in Z2. For a mixed interval session at the same *average* power but with
+repeated spikes into Z5–Z6, the power distribution is much wider. The key insight is
+that $\NP$ encodes this spread through the 4th moment.
+
+## The Model
+
+Assume instantaneous power $X$ follows a normal distribution:
+
+$$
+X \sim \mathcal{N}(\mu, \sigma^2)
+$$
+
+Set $\mu = \AP$ (average power equals the mean of the distribution). The 4th raw moment
+of a normal distribution is:
+
+$$
+\E[X^4] = \mu^4 + 6\mu^2\sigma^2 + 3\sigma^4
+$$
+
+Since $\NP = (\E[X^4])^{1/4}$, we have $\E[X^4] = \NP^4$. Substituting and collecting
+in $s = \sigma^2$:
+
+$$
+3s^2 + 6\mu^2 s - (\NP^4 - \mu^4) = 0
+$$
+
+Solving the positive root:
+
+$$
+s^* = \frac{-3\mu^2 + \sqrt{6\mu^4 + 3\cdot\NP^4}}{3}, \qquad \sigma = \sqrt{\max(s^*, 0)}
+$$
+
+The derivation is given in full in @sec-app-gaussian.
+
+## Zone Fractions
+
+With $\mu$ and $\sigma$ determined, the fraction of time in zone $k$ (bounded by FTP
+fractions $[\ell_k, u_k)$) is:
+
+$$
+z_k = P(\ell_k \cdot \FTP \leq X < u_k \cdot \FTP) = \Phi\!\left(\frac{u_k\cdot\FTP - \mu}{\sigma}\right) - \Phi\!\left(\frac{\ell_k\cdot\FTP - \mu}{\sigma}\right)
+$$
+
+where $\Phi$ is the standard normal CDF, computed via the error function
+$\Phi(x) = \tfrac{1}{2}[1 + \text{erf}(x/\sqrt{2})]$.
+
+## Behaviour
+
+- **Steady ride** ($\VI \approx 1.02$): $\sigma$ is small, almost all probability mass
+  sits in the zone containing $\AP$, matching physical intuition.
+- **Interval session** ($\VI \approx 1.15$–$1.25$): $\sigma$ grows substantially,
+  spreading time across Z1 through Z5+.
+- **Limitation**: the model is unimodal. A true interval session has a *bimodal*
+  distribution — easy recovery valleys and hard work peaks — not a single Gaussian.
+  This leads to a slight underestimation of time at the extremes and overestimation near
+  the mean. The Bayesian model addresses this by learning the actual distribution from
+  data.
+
+## Python Implementation
+
+```python
+from math import erf, sqrt
+
+def gaussian_zone_times(avg_power, np_power, duration_s, ftp, zones):
+    """Estimate zone seconds using Gaussian moment matching."""
+    mu    = avg_power
+    inner = 6.0 * mu**4 + 3.0 * np_power**4
+    s     = (-3.0 * mu**2 + sqrt(inner)) / 3.0
+    sigma = sqrt(max(0.0, s))
+
+    def cdf(x):
+        if sigma <= 0:
+            return 1.0 if x >= mu else 0.0
+        return 0.5 * (1.0 + erf((x - mu) / (sigma * sqrt(2.0))))
+
+    result = {}
+    for zone_name, lo_frac, hi_frac in zones:
+        hi_cdf = 1.0 if hi_frac >= 9.0 else cdf(hi_frac * ftp)
+        result[zone_name] = duration_s * max(0.0, hi_cdf - cdf(lo_frac * ftp))
+    return result
+```
+
+# Bayesian Dirichlet Regression {#sec-bayesian}
+
+## Motivation
+
+The Gaussian model is fully analytic and requires no data. Its limitation is the
+unimodal assumption. For riders with Garmin computers, *ground-truth* zone data is
+available: the device records actual seconds in each zone from the raw power stream.
+This section describes a model that learns from this data.
+
+## The Dirichlet Distribution
+
+Zone fractions live in the probability simplex $\Delta^6 = \{\mathbf{z} \in \mathbb{R}^7 :
+z_k \geq 0, \sum_k z_k = 1\}$. The Dirichlet distribution is the natural distribution
+over this space:
+
+$$
+\mathbf{z} \sim \Dir(\boldsymbol{\alpha}), \quad \alpha_k > 0
+$$
+
+with density:
+
+$$
+p(\mathbf{z} \mid \boldsymbol{\alpha}) = \frac{\Gamma(\alpha_0)}{\prod_k \Gamma(\alpha_k)} \prod_k z_k^{\alpha_k - 1}, \quad \alpha_0 = \sum_k \alpha_k
+$$
+
+The mean is $\E[z_k] = \alpha_k / \alpha_0$, and the *precision* $\alpha_0$ controls how
+concentrated the distribution is around its mean. Full properties are given in
+@sec-app-dirichlet.
+
+## The Regression Model
+
+For ride $i$ with features intensity $q_i = \AP_i / \FTP$ and log variability index
+$v_i = \log(\VI_i)$, the concentration parameters are modelled as:
+
+$$
+\log \alpha_{ik} = \beta_{0k} + \beta_{1k}\,q_i + \beta_{2k}\,v_i, \quad k = 1,\ldots,7
+$$
+
+This log-linear link ensures $\alpha_{ik} > 0$ for all inputs. The full model is:
+
+$$
+\begin{aligned}
+\beta_{jk} &\sim \mathcal{N}(0, 1), \quad j \in \{0,1,2\},\; k = 1,\ldots,7 \\
+\log \alpha_{ik} &= \beta_{0k} + \beta_{1k}\,q_i + \beta_{2k}\,v_i \\
+\mathbf{z}_i &\sim \Dir(\boldsymbol{\alpha}_i)
+\end{aligned}
+$$
+
+The prior $\mathcal{N}(0,1)$ on log-scale is weakly informative — it allows $\alpha_k$
+to vary between roughly 0.05 and 20, covering the full range from near-uniform to highly
+concentrated zone distributions.
+
+## Feature Engineering
+
+The two features were chosen to be interpretable and sufficient:
+
+**Intensity** $q_i = \AP_i / \FTP$ locates the average effort on the zone scale.
+A ride at $q = 0.65$ is deep in Z2; at $q = 0.92$ it sits at the threshold of Z4.
+
+**Log variability index** $v_i = \log(\VI_i)$ where $\VI = \NP / \AP$ encodes power
+distribution spread. The log transform is natural: $\VI \geq 1$ always, so $v_i \geq 0$,
+and the log scale compresses the range for highly variable rides. Importantly, this
+feature connects back to the Gaussian model: $\VI$ is a monotone function of $\sigma$
+via the 4th moment equation, so both models share the same physical interpretation of
+power variability.
+
+## Posterior Inference
+
+Posterior sampling uses the No-U-Turn Sampler (NUTS) [@hoffman2014] implemented in
+PyMC [@abril2023]. Two chains of 1000 draws each (after 500 tuning steps) are run with
+target acceptance probability 0.90. Posterior means $\hat{\beta}_{jk}$ are stored for
+fast prediction; full posterior samples are optionally retained for uncertainty
+quantification.
+
+## Prediction
+
+For a new ride with $(\AP, \NP)$:
+
+$$
+\hat{\alpha}_k = \exp\!\left(\hat{\beta}_{0k} + \hat{\beta}_{1k}\,(\AP/\FTP) + \hat{\beta}_{2k}\,\log(\NP/\AP)\right)
+$$
+
+$$
+\hat{z}_k = \frac{\hat{\alpha}_k}{\sum_j \hat{\alpha}_j}
+$$
+
+When full posterior samples are available, uncertainty in $\hat{\mathbf{z}}$ can be
+propagated by drawing $\boldsymbol{\alpha}^{(s)}$ from each posterior sample $s$ and
+reporting posterior predictive means and credible intervals.
+
+## Python Implementation
+
+```python
+import pymc as pm
+import pytensor.tensor as pt
+
+def build_and_fit(intensity, log_vi, zone_fracs):
+    """
+    intensity  : array [N] — AP/FTP per ride
+    log_vi     : array [N] — log(NP/AP) per ride
+    zone_fracs : array [N, 7] — observed zone fractions (Garmin ground truth)
+    """
+    N_ZONES = 7
+    with pm.Model():
+        beta0 = pm.Normal("beta0", mu=0.0, sigma=1.0, shape=N_ZONES)
+        beta1 = pm.Normal("beta1", mu=0.0, sigma=1.0, shape=N_ZONES)
+        beta2 = pm.Normal("beta2", mu=0.0, sigma=1.0, shape=N_ZONES)
+
+        intensity_t = pt.as_tensor_variable(intensity[:, None])   # [N, 1]
+        log_vi_t    = pt.as_tensor_variable(log_vi[:, None])      # [N, 1]
+
+        log_alpha = beta0 + beta1 * intensity_t + beta2 * log_vi_t  # [N, 7]
+        alpha = pm.math.exp(log_alpha)
+
+        pm.Dirichlet("obs", a=alpha, observed=zone_fracs)
+
+        return pm.sample(draws=1000, tune=500, target_accept=0.90)
+```
+
+## Method Priority in the Dashboard
+
+The dashboard applies a three-level fallback per ride:
+
+1. **Garmin device data** (`power_z1..power_z7`): exact seconds recorded on-device from
+   raw power. Used whenever non-zero zone values are present.
+2. **Bayesian prediction**: applied when the model is fitted and Garmin data is absent
+   (typical for Strava-only rides).
+3. **Gaussian fallback**: used when neither Garmin data nor a fitted model is available.
+
+This hierarchy ensures the most accurate available estimate is always used, while
+remaining gracefully degradable.
+
+# Results {#sec-results}
+
+The dashboard was evaluated on the author's training data: 25 cycling activities from
+the past four weeks comprising Garmin-recorded rides and Strava imports from Zwift and
+outdoor rides.
+
+The naive approach — assigning each ride entirely to the zone containing its average
+power — produced a nonsensical distribution: 98.8% Z1/Z2, 0% in any zone above Z2,
+since most endurance rides average into Z2 and the entire duration was assigned there.
+
+After applying the Gaussian model, the four-week distribution became:
+
+| Zone           | % of total time |
+|----------------|-----------------|
+| Z1 Recovery    | 32.0%           |
+| Z2 Endurance   | 22.7%           |
+| Z3 Tempo       | 24.9%           |
+| Z4 Threshold   | 11.0%           |
+| Z5 VO~2~max    | 4.6%            |
+| Z6 Anaerobic   | 3.6%            |
+| Z7 Neuromuscular | 1.2%          |
+
+: Four-week zone distribution from Gaussian model. {#tbl-results}
+
+The grey-zone total (Z3+Z4 = 35.9%) substantially exceeded the 15% target, triggering
+the polarised audit flag. The recommendation engine correctly suggested reducing tempo
+work and adding a VO~2~max session, in alignment with Seiler's guidelines.
+
+The Bayesian Dirichlet model is trained on Garmin rides with per-zone data. Fitted
+posterior means for $\beta_1$ (intensity coefficient) confirm that higher average power
+relative to FTP concentrates time in higher zones, as expected. The $\beta_2$ (log-VI
+coefficient) is positive for Z5–Z7 and negative for Z1–Z2, correctly encoding that
+more variable rides (higher VI) shift time toward the extremes.
+
+# Discussion {#sec-discussion}
+
+## Gaussian Model Strengths and Limitations
+
+The analytic Gaussian approach requires no training data and performs well on rides with
+moderate variability. Its main limitation is the unimodal assumption: polarised interval
+sessions with long easy recoveries and hard work intervals are genuinely bimodal, and the
+Gaussian model will overestimate grey-zone time while underestimating Z1 and Z5+. For
+such sessions, VI often exceeds 1.20, and users should interpret zone estimates as
+approximations.
+
+## Bayesian Model Strengths and Limitations
+
+The Dirichlet regression can learn more complex, data-driven mappings and is not
+constrained to a unimodal power distribution. Its limitation is the need for sufficient
+Garmin training data — the model requires at least five rides with non-zero per-zone
+data to fit. A cold-start problem exists for new athletes or those without a Garmin
+device: the Gaussian fallback applies until enough data accumulates.
+
+The choice of $\mathcal{N}(0,1)$ priors on log-$\alpha$ is weakly informative. In a
+fully Bayesian setting, one could encode knowledge that endurance athletes typically
+spend most time in Z1/Z2 by placing informative priors on $\beta_0$. This is left as
+a future extension.
+
+## Dashboard Integration
+
+Both models integrate directly with the polarised training audit and the workout
+recommendation engine. The audit computes:
+
+- $p_\text{easy} = z_1 + z_2$ (target: $\geq 80\%$)
+- $p_\text{grey} = z_3 + z_4$ (target: $\leq 15\%$)
+- $p_\text{hard} = z_5 + z_6 + z_7$ (target: $\geq 15\%$)
+
+The recommender steers workout selection away from grey-zone sessions when $p_\text{grey}
+> 15\%$ and toward VO~2~max intervals when $p_\text{hard} < 5\%$.
+
+## Future Directions
+
+Several natural extensions exist:
+
+- **Bimodal model**: a mixture of two Gaussians (easy and hard) would better represent
+  true interval sessions.
+- **Ride-type conditioning**: including a categorical feature for ride type (outdoor,
+  Zwift, group ride) could improve prediction accuracy.
+- **Online learning**: updating the posterior incrementally as new Garmin rides arrive,
+  rather than refitting from scratch.
+- **Garmin workout push**: using the `garth` library to push structured workouts
+  (generated by the recommender) to Garmin Connect and sync to the device.
+
+# Conclusion
+
+This paper presented two statistical approaches to estimating cycling power zone
+distributions from summary statistics alone. The Gaussian moment-matching model
+provides an interpretable, parameter-free baseline grounded in the mathematical
+relationship between normalised power and the 4th moment. The Bayesian Dirichlet
+regression model extends this by learning from Garmin ground-truth data, with full
+uncertainty quantification via posterior sampling. Together they enable meaningful
+training polarisation monitoring even when only summary data is available — a practical
+advance for athletes training across multiple platforms.
+
+Both models are implemented in an open-source cycling dashboard and form the basis of an
+automated recommendation engine that steers training away from the grey zone and toward
+evidence-based polarised load distributions.
+
+# Acknowledgements {.unnumbered}
+
+The models, system architecture, and analytical direction described in this paper were
+designed by the author. The code implementation, mathematical write-up, and document
+were produced with the assistance of [Claude](https://claude.ai) (Anthropic), an AI
+assistant, working from the author's specifications and iterative feedback throughout
+development.
+
+---
+
+# Mathematical Appendix {.appendix}
+
+## Normalised Power as an $\mathcal{L}^4$ Norm {#sec-app-np}
+
+Normalised power is defined as the 4th root of the mean 4th power of a smoothed power
+signal. For a stationary power process $\{X_t\}$ with empirical distribution $F$:
+
+$$
+\NP = \left(\int x^4 \, dF(x)\right)^{1/4} = \|X\|_4
+$$
+
+This is the $\mathcal{L}^4$ norm of the power distribution, i.e.\ the 4th raw moment
+raised to the power $1/4$.
+
+The 4th power weighting is physiologically motivated: the metabolic stress of cycling
+at high power is disproportionately greater than at low power (due to the exponential
+relationship between power output and glycolytic demand near VO~2~max). A ride with
+repeated near-maximal efforts is therefore more stressful than a steady ride at the same
+average power, and NP captures this nonlinearly.
+
+**Why not $\mathcal{L}^2$ (RMS)?** The RMS ($\|X\|_2$) would equal $\sqrt{\mu^2 + \sigma^2}$
+under a Gaussian, giving only a small boost for variable rides. The $\mathcal{L}^4$ norm
+amplifies the effect of high-power spikes much more aggressively, matching empirical
+observation that interval sessions produce disproportionate fatigue.
+
+## Derivation of Gaussian $\sigma$ from NP and AP {#sec-app-gaussian}
+
+**Setup.** Assume $X \sim \mathcal{N}(\mu, \sigma^2)$ with $\mu = \AP$.
+
+**Fourth raw moment.** For a normal distribution:
+
+$$
+\E[X^4] = \mu^4 + 6\mu^2\sigma^2 + 3\sigma^4
+$$
+
+This follows from the moment generating function or Isserlis's theorem applied to the
+normal distribution.
+
+**Setting the 4th moment equal to $\NP^4$:**
+
+$$
+\NP^4 = \mu^4 + 6\mu^2\sigma^2 + 3\sigma^4
+$$
+
+**Rearranging as a quadratic in $s = \sigma^2$:**
+
+$$
+3s^2 + 6\mu^2 s - (\NP^4 - \mu^4) = 0
+$$
+
+**Applying the quadratic formula** with $a = 3$, $b = 6\mu^2$, $c = -(\NP^4 - \mu^4)$:
+
+$$
+s = \frac{-6\mu^2 + \sqrt{36\mu^4 + 12(\NP^4 - \mu^4)}}{6}
+= \frac{-3\mu^2 + \sqrt{6\mu^4 + 3\cdot\NP^4}}{3}
+$$
+
+(The negative root is discarded as $s = \sigma^2 \geq 0$.)
+
+**Therefore:**
+
+$$
+\boxed{\sigma = \sqrt{\max\!\left(0,\;\frac{-3\mu^2 + \sqrt{6\mu^4 + 3\cdot\NP^4}}{3}\right)}}
+$$
+
+**Limiting cases:**
+
+- $\NP = \AP$ ($\VI = 1$): substituting $\NP = \mu$ gives $s = 0$, so $\sigma = 0$. All
+  power is at exactly $\AP$ — physically, a perfectly constant power output.
+- $\NP \gg \AP$: $\sigma$ grows, spreading the distribution widely across zones.
+
+**Note on stationarity.** The derivation treats $\{X_t\}$ as an i.i.d. sample from
+$\mathcal{N}(\mu, \sigma^2)$. Real rides are not i.i.d. — power varies continuously and
+exhibits autocorrelation. The derivation nonetheless provides a reasonable approximation
+because the 4th moment is a global property of the power distribution that does not
+depend on its temporal structure.
+
+## Properties of the Dirichlet Distribution {#sec-app-dirichlet}
+
+The Dirichlet distribution with parameter vector $\boldsymbol{\alpha} = (\alpha_1, \ldots, \alpha_K)$,
+$\alpha_k > 0$, is the conjugate prior for the Categorical distribution. Its probability
+density function on the simplex $\Delta^{K-1}$ is:
+
+$$
+p(\mathbf{z} \mid \boldsymbol{\alpha}) = \frac{\Gamma(\alpha_0)}{\prod_{k=1}^K \Gamma(\alpha_k)} \prod_{k=1}^K z_k^{\alpha_k - 1}
+$$
+
+where $\alpha_0 = \sum_k \alpha_k$ is the *concentration* (or *precision*).
+
+**Moments:**
+
+$$
+\E[z_k] = \frac{\alpha_k}{\alpha_0}, \qquad
+\Var[z_k] = \frac{\alpha_k(\alpha_0 - \alpha_k)}{\alpha_0^2(\alpha_0 + 1)}
+$$
+
+The variance is small when $\alpha_0$ is large (concentrated distribution) and approaches
+the maximum when $\alpha_0 \to 0$ (distribution spreading toward the vertices of the simplex).
+
+**Marginals.** Each marginal $z_k \sim \text{Beta}(\alpha_k, \alpha_0 - \alpha_k)$, so
+the expected fraction in zone $k$ is exactly $\alpha_k / \alpha_0$.
+
+**Interpretation.** The Dirichlet is the natural model for *compositional data* — vectors
+of non-negative fractions summing to 1. Zone time fractions are exactly this type of
+data. Modelling them with a multivariate normal would ignore the sum-to-one constraint
+and risk producing negative fractions or fractions exceeding 1.
+
+## Full Dirichlet Regression Model Specification {#sec-app-model}
+
+### Notation
+
+| Symbol | Description |
+|--------|-------------|
+| $N$ | Number of training rides |
+| $K = 7$ | Number of Coggan power zones |
+| $q_i$ | Intensity feature: $\AP_i / \FTP$ |
+| $v_i$ | Variability feature: $\log(\VI_i) = \log(\NP_i / \AP_i)$ |
+| $\mathbf{z}_i$ | Observed zone fraction vector (from Garmin), length $K$ |
+| $\boldsymbol{\alpha}_i$ | Concentration parameter vector for ride $i$ |
+| $\beta_{jk}$ | Regression coefficient for feature $j$, zone $k$ |
+
+### Likelihood
+
+$$
+\mathbf{z}_i \mid \boldsymbol{\alpha}_i \sim \Dir(\boldsymbol{\alpha}_i)
+$$
+
+$$
+\log \alpha_{ik} = \beta_{0k} + \beta_{1k}\,q_i + \beta_{2k}\,v_i
+$$
+
+### Priors
+
+$$
+\beta_{jk} \sim \mathcal{N}(0, 1), \quad j \in \{0, 1, 2\}, \; k \in \{1, \ldots, 7\}
+$$
+
+Total parameters: $3 \times 7 = 21$ scalar coefficients.
+
+### Prior Predictive Check
+
+Under the prior, when $q = 0.65$ (a Z2 ride, $\beta_{jk} \sim \mathcal{N}(0,1)$):
+
+$$
+\log \alpha_k \sim \mathcal{N}(0, 1 + 0.65^2 + 0^2) = \mathcal{N}(0, 1.42)
+$$
+
+So $\alpha_k \sim \text{LogNormal}(0, 1.42)$, which has a median of 1 and a 95%
+interval of roughly $(0.04, 23)$. This is weakly informative: it allows anything from a
+near-uniform distribution over zones to one highly concentrated in a single zone, without
+strongly constraining either. The prior is appropriate given the wide variability in
+athlete training patterns.
+
+### Posterior Inference
+
+The joint posterior:
+
+$$
+p(\boldsymbol{\beta} \mid \mathbf{z}_{1:N}) \propto p(\boldsymbol{\beta}) \prod_{i=1}^N p(\mathbf{z}_i \mid \boldsymbol{\alpha}_i(\boldsymbol{\beta}))
+$$
+
+has no closed form. NUTS [@hoffman2014] is used to draw samples. The $\mathcal{L}^4$
+Riemannian geometry of the Dirichlet likelihood makes the posterior mildly
+non-Euclidean; the `target_accept=0.90` setting in PyMC ensures the sampler takes
+smaller steps, reducing divergences near the boundary of the simplex.
+
+### Posterior Predictive Distribution
+
+For a new ride $*$ with features $(q_*, v_*)$:
+
+$$
+\hat{\alpha}_{*k}^{(s)} = \exp\!\left(\beta_{0k}^{(s)} + \beta_{1k}^{(s)}\,q_* + \beta_{2k}^{(s)}\,v_*\right)
+$$
+
+$$
+\hat{z}_{*k}^{(s)} = \frac{\hat{\alpha}_{*k}^{(s)}}{\sum_j \hat{\alpha}_{*j}^{(s)}}
+$$
+
+for each posterior sample $s = 1, \ldots, S$. The posterior predictive mean is:
+
+$$
+\hat{z}_{*k} = \frac{1}{S} \sum_{s=1}^S \hat{z}_{*k}^{(s)}
+$$
+
+and 94% credible intervals follow from the empirical 3rd and 97th percentiles of
+$\{\hat{z}_{*k}^{(s)}\}$.
+
+## Identifiability Note
+
+The regression model for $\log\boldsymbol{\alpha}$ is identifiable because the features
+$q_i$ and $v_i$ take different values across rides, and the Dirichlet likelihood
+distinguishes between different $\boldsymbol{\alpha}$ vectors (unlike the Categorical
+likelihood, which is invariant to rescaling of $\boldsymbol{\alpha}$). In practice the
+posterior is well-concentrated with 30+ training rides.
+
+---
+
+# References {.unnumbered}
+
+::: {#refs}
+:::

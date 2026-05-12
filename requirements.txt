@@ -1,0 +1,22 @@
+# Data ingestion
+stravalib>=1.5.0
+fitparse>=1.2.0
+garth>=0.4.0          # Garmin SSO auth
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.26.0
+scikit-learn>=1.4.0   # TSS and recovery ML estimators
+
+# Bayesian model (optional — falls back to Gaussian if not installed)
+pymc>=5.0.0
+pytensor>=2.18.0
+
+# Dashboard
+streamlit>=1.35.0
+plotly>=5.20.0
+
+# Utilities
+python-dotenv>=1.0.0
+requests>=2.31.0
+joblib>=1.3.0
