@@ -530,6 +530,98 @@ with st.expander("Why this recommendation?"):
 st.divider()
 
 
+# ─── Weekly plan ──────────────────────────────────────────────────────────────
+
+from datetime import date as _date
+from src.recommender.weekly_planner import plan_week
+
+st.markdown('<div class="section-label">Weekly Training Plan</div>', unsafe_allow_html=True)
+st.caption("Wed = group ride  ·  Sat = long ride  ·  other days filled by recommender")
+
+_garmin_configured = bool(os.getenv("GARMIN_EMAIL")) and bool(os.getenv("GARMIN_PASSWORD"))
+
+try:
+    from src.ingestion.garmin_push import push_workout as _push_workout, is_available as _garmin_push_ok
+    _push_available = _garmin_push_ok() and _garmin_configured
+except Exception:
+    _push_available = False
+
+week = plan_week(
+    pmc_df         = data["pmc"],
+    activities_df  = data["activities"],
+    ftp            = FTP,
+    tsb            = today_row.get("tsb"),
+    hrv_deviation  = today_row.get("hrv_deviation"),
+    sleep_hours    = today_row.get("sleep_hours"),
+    recovery_score = today_row.get("recovery_score"),
+)
+
+_intensity_dot = {"low": "#22c55e", "moderate": "#f59e0b", "high": "#f45b3b", "none": "#6b7280"}
+_day_cols = st.columns(7)
+
+for col, day in zip(_day_cols, week):
+    is_today = day.date == _date.today()
+    border   = "#e8541a" if is_today else ("#3b82f6" if day.is_fixed else "#1e1e38")
+    dot_c    = _intensity_dot.get(day.intensity, "#6b7280")
+    label    = f"<b>{day.fixed_label}</b>" if day.is_fixed else (day.workout.name if day.workout else "Rest")
+    tss_str  = f"~{day.tss_target} TSS"
+    dur_str  = (
+        f"{day.workout.duration_min_h:.1f}–{day.workout.duration_max_h:.1f}h"
+        if day.workout else ""
+    )
+    lock_icon = " \U0001f512" if day.is_fixed else ""
+
+    with col:
+        st.markdown(f"""
+<div style="background:#111120;border:1px solid {border};border-radius:12px;
+            padding:0.75rem 0.65rem;min-height:140px;">
+  <div style="color:#707090;font-size:0.65rem;font-weight:700;letter-spacing:0.08em;
+              margin-bottom:0.2rem;">{day.day_name.upper()}&nbsp;{day.date.strftime("%-d %b") if hasattr(day.date, "strftime") else day.date}{lock_icon}</div>
+  <div style="display:flex;align-items:center;gap:0.3rem;margin-bottom:0.4rem;">
+    <div style="width:7px;height:7px;border-radius:50%;background:{dot_c};flex-shrink:0;"></div>
+    <div style="color:#e8e8f0;font-size:0.73rem;font-weight:600;line-height:1.2;">{label}</div>
+  </div>
+  <div style="color:#50507a;font-size:0.62rem;">{tss_str}</div>
+  <div style="color:#50507a;font-size:0.62rem;">{dur_str}</div>
+</div>
+""", unsafe_allow_html=True)
+
+        # Push to Garmin button
+        if _push_available and day.workout and day.workout.steps:
+            if st.button("Send to Garmin", key=f"push_{day.date}", use_container_width=True):
+                with st.spinner("Pushing to Garmin Connect..."):
+                    try:
+                        wid = _push_workout(day.workout, FTP, schedule_date=day.date)
+                        st.success(f"Scheduled! ID {wid}")
+                    except Exception as e:
+                        st.error(str(e))
+
+# Step breakdown expander
+with st.expander("Workout step details"):
+    step_cols = st.columns(7)
+    for col, day in zip(step_cols, week):
+        with col:
+            st.markdown(f"**{day.day_name}**")
+            if day.workout and day.workout.steps:
+                for s in day.workout.steps:
+                    dur = f"{s.duration_s // 60}min" if s.duration_s else "open"
+                    pwr = (
+                        f"{int(s.power_target_low * 100)}-{int(s.power_target_high * 100)}%"
+                        if s.power_target_low else ""
+                    )
+                    rpt = f" x{s.repeat_count}" if s.repeat_count > 1 else ""
+                    st.markdown(
+                        f"<div style='font-size:0.65rem;color:#9090b8;margin-bottom:2px;'>"
+                        f"{s.name}{rpt} &middot; {dur} {pwr}</div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown("<div style='font-size:0.65rem;color:#50507a;'>No steps defined</div>",
+                            unsafe_allow_html=True)
+
+st.divider()
+
+
 # ─── Recent rides ─────────────────────────────────────────────────────────────
 
 st.markdown('<div class="section-label">Recent Rides</div>', unsafe_allow_html=True)
