@@ -563,7 +563,7 @@ st.dataframe(
         "Duration":  st.column_config.TextColumn("Duration",  width="small"),
         "Elev (m)":  st.column_config.NumberColumn("Elev (m)", format="%d m",    width="small"),
         "NP (W)":    st.column_config.NumberColumn("NP (W)",   format="%d W",    width="small"),
-        "TSS":       st.column_config.ProgressColumn("TSS", min_value=0, max_value=300, width="medium"),
+        "TSS":       st.column_config.ProgressColumn("TSS", min_value=0, max_value=300, format="%d", width="medium"),
     },
 )
 
