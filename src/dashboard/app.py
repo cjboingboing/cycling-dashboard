@@ -256,26 +256,33 @@ def load_data():
 
 
 # ─── Strava refresh ───────────────────────────────────────────────────────────
+# Only shown when Strava credentials are present in the environment.
+# On the public demo deployment the parquet files are a static snapshot.
+
+_strava_configured = bool(os.getenv("STRAVA_CLIENT_SECRET"))
 
 with st.sidebar:
-    st.markdown("### Strava Sync")
-    if st.button("Refresh from Strava", use_container_width=True):
-        with st.spinner("Syncing from Strava…"):
-            result = subprocess.run(
-                [sys.executable, str(REFRESH_SCRIPT)],
-                capture_output=True,
-                text=True,
-                cwd=str(REFRESH_SCRIPT.parent),
-            )
-        if result.returncode == 0:
-            st.success("Done!")
-            st.text(result.stdout)
-            load_data.clear()
-            st.rerun()
-        else:
-            st.error("Refresh failed")
-            st.text(result.stdout)
-            st.text(result.stderr)
+    if _strava_configured:
+        st.markdown("### Strava Sync")
+        if st.button("Refresh from Strava", use_container_width=True):
+            with st.spinner("Syncing from Strava…"):
+                result = subprocess.run(
+                    [sys.executable, str(REFRESH_SCRIPT)],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(REFRESH_SCRIPT.parent),
+                )
+            if result.returncode == 0:
+                st.success("Done!")
+                st.text(result.stdout)
+                load_data.clear()
+                st.rerun()
+            else:
+                st.error("Refresh failed")
+                st.text(result.stdout)
+                st.text(result.stderr)
+    else:
+        st.caption("📊 Demo — sample data snapshot")
 
 
 # ─── Header ───────────────────────────────────────────────────────────────────
