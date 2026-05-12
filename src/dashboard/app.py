@@ -576,7 +576,7 @@ for col, day in zip(_day_cols, week):
 <div style="background:#111120;border:1px solid {border};border-radius:12px;
             padding:0.75rem 0.65rem;min-height:140px;">
   <div style="color:#707090;font-size:0.65rem;font-weight:700;letter-spacing:0.08em;
-              margin-bottom:0.2rem;">{day.day_name.upper()}&nbsp;{day.date.strftime("%-d %b") if hasattr(day.date, "strftime") else day.date}{lock_icon}</div>
+              margin-bottom:0.2rem;">{day.day_name.upper()}&nbsp;{day.date.day} {day.date.strftime("%b")}{lock_icon}</div>
   <div style="display:flex;align-items:center;gap:0.3rem;margin-bottom:0.4rem;">
     <div style="width:7px;height:7px;border-radius:50%;background:{dot_c};flex-shrink:0;"></div>
     <div style="color:#e8e8f0;font-size:0.73rem;font-weight:600;line-height:1.2;">{label}</div>
